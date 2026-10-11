@@ -1,13 +1,49 @@
 name: CI
+
 on:
   push:
+    branches: [develop, main]
+  pull_request:
     branches: [develop, main]
   workflow_dispatch:
 
 jobs:
-  build-test:
+  test:
+    name: Testing
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: echo "Build server is working"
-      - run: docker --version
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run unit tests
+        run: pytest -v
+
+  staging:
+    name: Staging
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t app:${{ github.sha }} .
+      - name: Start staging container (isolated network)
+        run: |
+          docker network create staging-net
+          docker run -d --name app-staging --network staging-net -p 8081:8080 app:${{ github.sha }}
+      - name: Smoke test
+        run: |
+          sleep 5
+          curl --fail http://localhost:8081/health
+          curl --fail http://localhost:8081/
+      - name: Show container logs
+        if: always()
+        run: docker logs app-staging
+      - name: Tear down
+        if: always()
+        run: |
+          docker rm -f app-staging
+          docker network rm staging-net
