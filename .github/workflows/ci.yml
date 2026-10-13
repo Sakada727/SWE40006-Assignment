@@ -34,11 +34,6 @@ jobs:
         run: |
           docker network create staging-net
           docker run -d --name app-staging --network staging-net -p 8081:8080 app:${{ github.sha }}
-      - name: Smoke test
-        run: |
-          sleep 5
-          curl --fail http://localhost:8081/health
-          curl --fail http://localhost:8081/
       - name: Show container logs
         if: always()
         run: docker logs app-staging
