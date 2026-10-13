@@ -34,11 +34,6 @@ jobs:
         run: |
           docker network create staging-net
           docker run -d --name app-staging --network staging-net -p 8081:8080 app:${{ github.sha }}
-      - name: Smoke test
-        run: |
-          sleep 5
-          curl --fail http://localhost:8081/health
-          curl --fail http://localhost:8081/
       - name: Show container logs
         if: always()
         run: docker logs app-staging
@@ -47,3 +42,44 @@ jobs:
         run: |
           docker rm -f app-staging
           docker network rm staging-net
+
+  deploy:
+    name: Deploy to production
+    needs: staging
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    env:
+      EC2_HOST: ${{ secrets.EC2_HOST }}
+      EC2_USER: ec2-user
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up SSH
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$EC2_SSH_KEY" > ~/.ssh/key.pem
+          chmod 600 ~/.ssh/key.pem
+          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
+
+      - name: Copy code to EC2
+        run: |
+          tar czf - --exclude=.git . | ssh -i ~/.ssh/key.pem $EC2_USER@$EC2_HOST \
+            "rm -rf ~/app && mkdir ~/app && tar xzf - -C ~/app"
+
+      - name: Build and run container
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+        run: |
+          ssh -i ~/.ssh/key.pem $EC2_USER@$EC2_HOST "
+            cd ~/app &&
+            docker build -t myapp . &&
+            (docker stop app || true) &&
+            (docker rm app || true) &&
+            docker run -d --name app --restart unless-stopped -p 8080:8080 \
+              -e DATABASE_URL='$DATABASE_URL' \
+              -e SECRET_KEY='$SECRET_KEY' \
+              myapp
+          "

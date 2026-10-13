@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Task Tracker</title>
+  <style>
+    body { background-color: #1a202c; color: white; }
+    header { background-color: #dd6b20; color: white; padding: 20px; text-align: center; }
+    main { padding: 20px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Task Tracker</h1>
+    <form method="post" action="/logout" style="display:inline">
+      <span>Signed in as {{ current_user.username }}</span>
+      <button type="submit" id="logout-button">Log out</button>
+    </form>
+  </header>
+
+  {% if error %}                            <!-- only show this if the route sent an error message -->
+    <p id="error">{{ error }}</p>
+  {% endif %}
+
+  <form method="post" action="/tasks">
+    <input type="text" id="title" name="title" placeholder="New task" required>
+    <button type="submit" id="add-task">Add task</button>
+  </form>
+
+  <ul id="task-list">                       <!-- the list of tasks; Playwright finds it by this id -->
+    {% for task in tasks %}
+      <li>
+        <span>{{ task.title }}</span>
+        {% if task.done %}
+          <span class="badge">Completed</span>
+        {% else %}
+          <form method="post" action="/tasks/{{ task.id }}/complete" style="display:inline">
+            <button type="submit" class="complete-btn">Mark complete</button>
+          </form>
+        {% endif %}
+        <form method="post" action="/tasks/{{ task.id }}/delete" style="display:inline">
+          <button type="submit" class="delete-btn">Delete</button>
+        </form>
+      </li>
+    {% endfor %}
+  </ul>
+</body>
+</html>
