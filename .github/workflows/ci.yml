@@ -7,7 +7,16 @@ on:
     branches: [develop, main]
   workflow_dispatch:
 
+# One run per branch; a new PR push cancels the old run, but never cancel a deploy mid-flight
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
 jobs:
+  # ---------------------------------------------------------------- Testing
   test:
     name: Testing
     runs-on: ubuntu-latest
@@ -18,41 +27,268 @@ jobs:
           python-version: "3.12"
           cache: pip
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          pip install pytest-cov
       - name: Run unit tests
-        run: pytest -v
+        run: pytest -v --junitxml=unit-report.xml --cov=. --cov-report=xml:coverage.xml
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-reports
+          path: |
+            unit-report.xml
+            coverage.xml
 
+  # ------------------------------------------- Staging (throwaway CI runner)
   staging:
-    name: Staging
+    name: Staging (CI runner)
     needs: test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # needed to push the tested image to GHCR
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set image name
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@v3
+
       - name: Build image
-        run: docker build -t app:${{ github.sha }} .
-      - name: Start staging container (isolated network)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Start staging stack (isolated network + Postgres)
         run: |
           docker network create staging-net
-          docker run -d --name app-staging --network staging-net -p 8081:8080 app:${{ github.sha }}
+          docker run -d --name staging-db --network staging-net \
+            -e POSTGRES_USER=app -e POSTGRES_PASSWORD=app -e POSTGRES_DB=appdb \
+            postgres:16
+          for i in $(seq 1 30); do
+            docker exec staging-db pg_isready -U app -d appdb && break
+            sleep 2
+          done
+          docker run -d --name app-staging --network staging-net -p 8081:8080 \
+            -e DATABASE_URL=postgresql://app:app@staging-db:5432/appdb \
+            -e SECRET_KEY=staging-only-key \
+            ${{ env.IMAGE }}:${{ github.sha }}
+
+      - name: Wait for app health
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8081/health; then
+              echo; echo "App is healthy"; exit 0
+            fi
+            sleep 2
+          done
+          echo "App never became healthy"
+          docker logs app-staging
+          exit 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install test dependencies
+        run: pip install -r requirements.txt
+
+      - name: Integration and end-to-end tests
+        env:
+          BASE_URL: http://localhost:8081
+        run: |
+          dirs=""
+          for d in Tests/integration Tests/e2e; do
+            [ -d "$d" ] && dirs="$dirs $d"
+          done
+          if [ -n "$dirs" ]; then
+            pytest $dirs -v --junitxml=staging-report.xml
+          else
+            echo "::warning::No Tests/integration or Tests/e2e folder found, skipping"
+          fi
+
       - name: Show container logs
         if: always()
-        run: docker logs app-staging
+        run: |
+          docker logs app-staging > staging-app.log 2>&1 || true
+          cat staging-app.log
+
+      - name: Upload staging reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-reports
+          path: |
+            staging-report.xml
+            staging-app.log
+          if-no-files-found: ignore
+
+      # Image is pushed only after it has passed every test above
+      - name: Log in to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push tested image
+        if: github.event_name == 'push'
+        run: docker push "$IMAGE:${{ github.sha }}"
+
       - name: Tear down
         if: always()
         run: |
-          docker rm -f app-staging
-          docker network rm staging-net
+          docker rm -f app-staging staging-db || true
+          docker network rm staging-net || true
 
+  # ---------------------------------------------- Staging server (EC2)
+  # Runs on pushes to develop and main. If the staging EC2 is offline the job
+  # warns and skips instead of failing, so production deploys are not blocked.
+  staging-server:
+    name: Deploy to staging server
+    needs: staging
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: staging
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: false
+    env:
+      EC2_HOST: ${{ secrets.EC2_HOST_STAGING }}
+      EC2_USER: ec2-user
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set image name
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - name: Set up SSH
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY_STAGING }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$EC2_SSH_KEY" > ~/.ssh/key.pem
+          chmod 600 ~/.ssh/key.pem
+          ssh-keyscan -T 10 -H "$EC2_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Check staging server is reachable
+        id: reach
+        run: |
+          if ssh -i ~/.ssh/key.pem -o BatchMode=yes -o ConnectTimeout=15 \
+               "$EC2_USER@$EC2_HOST" true 2>/dev/null; then
+            echo "up=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "up=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Staging server offline::Could not SSH to the staging EC2, so the staging server deploy was skipped."
+          fi
+
+      - name: Write app secrets to server
+        if: steps.reach.outputs.up == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL_STAGING }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY_STAGING }}
+        run: |
+          printf 'DATABASE_URL=%s\nSECRET_KEY=%s\n' "$DATABASE_URL" "$SECRET_KEY" \
+            | ssh -i ~/.ssh/key.pem "$EC2_USER@$EC2_HOST" "umask 077 && cat > ~/app.env"
+
+      - name: Log in to GHCR on server
+        if: steps.reach.outputs.up == 'true'
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+        run: |
+          echo "$GHCR_TOKEN" | ssh -i ~/.ssh/key.pem "$EC2_USER@$EC2_HOST" \
+            "docker login ghcr.io -u $GHCR_USER --password-stdin"
+
+      - name: Pull, run and health-check (auto rollback on failure)
+        if: steps.reach.outputs.up == 'true'
+        run: |
+          ssh -i ~/.ssh/key.pem "$EC2_USER@$EC2_HOST" bash -s <<EOF
+          set -u
+          PREV=\$(docker inspect -f '{{.Config.Image}}' app 2>/dev/null || true)
+          docker pull $IMAGE:$GITHUB_SHA
+          docker rm -f app >/dev/null 2>&1 || true
+          docker run -d --name app --restart unless-stopped -p 8080:8080 \
+            --env-file ~/app.env -e GIT_SHA=$GITHUB_SHA \
+            $IMAGE:$GITHUB_SHA
+          for i in \$(seq 1 30); do
+            if curl -sf http://localhost:8080/health >/dev/null; then
+              echo "Staging server is running $GITHUB_SHA and is healthy"
+              docker image prune -f >/dev/null
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Health check failed, rolling back"
+          docker logs --tail 50 app || true
+          docker rm -f app || true
+          if [ -n "\$PREV" ]; then
+            docker run -d --name app --restart unless-stopped -p 8080:8080 --env-file ~/app.env "\$PREV"
+            echo "Rolled back to \$PREV"
+          fi
+          exit 1
+          EOF
+
+      - uses: actions/setup-python@v5
+        if: steps.reach.outputs.up == 'true'
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install test dependencies
+        if: steps.reach.outputs.up == 'true'
+        run: pip install -r requirements.txt
+
+      - name: Integration and end-to-end tests against staging server
+        if: steps.reach.outputs.up == 'true'
+        run: |
+          dirs=""
+          for d in Tests/integration Tests/e2e; do
+            [ -d "$d" ] && dirs="$dirs $d"
+          done
+          if [ -n "$dirs" ]; then
+            BASE_URL="http://$EC2_HOST:8080" pytest $dirs -v --junitxml=staging-server-report.xml
+          else
+            echo "::warning::No Tests/integration or Tests/e2e folder found, skipping"
+          fi
+
+      - name: Upload staging server reports
+        if: always() && steps.reach.outputs.up == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-server-reports
+          path: staging-server-report.xml
+          if-no-files-found: ignore
+
+      - name: Remove registry credentials from server
+        if: always() && steps.reach.outputs.up == 'true'
+        run: ssh -i ~/.ssh/key.pem "$EC2_USER@$EC2_HOST" "docker logout ghcr.io" || true
+
+  # ------------------------------------------------------------- Production
   deploy:
     name: Deploy to production
-    needs: staging
+    needs: staging-server
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
+    environment: production # add required reviewers in Settings > Environments for a manual approval gate
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
     env:
       EC2_HOST: ${{ secrets.EC2_HOST }}
       EC2_USER: ec2-user
     steps:
-      - uses: actions/checkout@v4
+      - name: Set image name
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
 
       - name: Set up SSH
         env:
@@ -63,23 +299,56 @@ jobs:
           chmod 600 ~/.ssh/key.pem
           ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
 
-      - name: Copy code to EC2
-        run: |
-          tar czf - --exclude=.git . | ssh -i ~/.ssh/key.pem $EC2_USER@$EC2_HOST \
-            "rm -rf ~/app && mkdir ~/app && tar xzf - -C ~/app"
-
-      - name: Build and run container
+      - name: Write app secrets to server
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
         run: |
-          ssh -i ~/.ssh/key.pem $EC2_USER@$EC2_HOST "
-            cd ~/app &&
-            docker build -t myapp . &&
-            (docker stop app || true) &&
-            (docker rm app || true) &&
-            docker run -d --name app --restart unless-stopped -p 8080:8080 \
-              -e DATABASE_URL='$DATABASE_URL' \
-              -e SECRET_KEY='$SECRET_KEY' \
-              myapp
-          "
+          printf 'DATABASE_URL=%s\nSECRET_KEY=%s\n' "$DATABASE_URL" "$SECRET_KEY" \
+            | ssh -i ~/.ssh/key.pem "$EC2_USER@$EC2_HOST" "umask 077 && cat > ~/app.env"
+
+      - name: Log in to GHCR on server
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+        run: |
+          echo "$GHCR_TOKEN" | ssh -i ~/.ssh/key.pem "$EC2_USER@$EC2_HOST" \
+            "docker login ghcr.io -u $GHCR_USER --password-stdin"
+
+      - name: Pull, run and health-check (auto rollback on failure)
+        run: |
+          ssh -i ~/.ssh/key.pem "$EC2_USER@$EC2_HOST" bash -s <<EOF
+          set -u
+          PREV=\$(docker inspect -f '{{.Config.Image}}' app 2>/dev/null || true)
+          docker pull $IMAGE:$GITHUB_SHA
+          docker rm -f app >/dev/null 2>&1 || true
+          docker run -d --name app --restart unless-stopped -p 8080:8080 \
+            --env-file ~/app.env -e GIT_SHA=$GITHUB_SHA \
+            $IMAGE:$GITHUB_SHA
+          for i in \$(seq 1 30); do
+            if curl -sf http://localhost:8080/health >/dev/null; then
+              echo "Deployed $GITHUB_SHA and it is healthy"
+              docker image prune -f >/dev/null
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Health check failed, rolling back"
+          docker logs --tail 50 app || true
+          docker rm -f app || true
+          if [ -n "\$PREV" ]; then
+            docker run -d --name app --restart unless-stopped -p 8080:8080 --env-file ~/app.env "\$PREV"
+            echo "Rolled back to \$PREV"
+          fi
+          exit 1
+          EOF
+
+      - name: Public smoke test
+        run: |
+          curl -sf --retry 5 --retry-delay 3 --retry-connrefused \
+            "http://$EC2_HOST:8080/health"
+          echo; echo "Production is reachable at http://$EC2_HOST:8080"
+
+      - name: Remove registry credentials from server
+        if: always()
+        run: ssh -i ~/.ssh/key.pem "$EC2_USER@$EC2_HOST" "docker logout ghcr.io" || true
