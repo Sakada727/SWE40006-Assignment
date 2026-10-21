@@ -14,8 +14,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 # .dockerignore keeps tests, the workflow, .git and any local .env out of the image
 COPY . .
 
-# Run as a non-root user
-RUN useradd --create-home appuser
+# Run as a non-root user. /app is owned by root, so the app could not create its
+# instance/ folder (used by the SQLite fallback when DATABASE_URL is unset) and
+# crashed on start-up; create it here and give it to the app user.
+RUN useradd --create-home appuser \
+    && mkdir -p /app/instance \
+    && chown appuser /app/instance
 USER appuser
 
 EXPOSE 8080
