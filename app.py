@@ -1,25 +1,34 @@
+import os
+
 from flask import Flask, abort, jsonify, redirect, render_template, request, url_for
 from flask_login import LoginManager, current_user, login_required, login_user, logout_user
 
-from config import Config, normalise_database_url
-from models import Task, User, db, validate_title
+from models import Link, Task, User, db, generate_short_code, validate_title, validate_url
+
+
+def normalise_database_url(url):
+    for prefix in ("postgres://", "postgresql://"):
+        if url.startswith(prefix):
+            return "postgresql+psycopg2://" + url[len(prefix):]
+    return url
 
 
 def create_app(config=None):
     app = Flask(__name__)
-    app.config.from_object(Config)
+    app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get("DATABASE_URL", "sqlite:///tasks.db")
+    app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
     if config:
-        app.config.update(config)  # overrides, e.g. from tests
+        app.config.update(config)
     app.config["SQLALCHEMY_DATABASE_URI"] = normalise_database_url(
         app.config["SQLALCHEMY_DATABASE_URI"]
     )
     if not app.config.get("SECRET_KEY"):
-        app.config["SECRET_KEY"] = Config.SECRET_KEY
+        app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dev-secret-change-me")
 
     db.init_app(app)
 
     login_manager = LoginManager()
-    login_manager.login_view = "login"      # visitors who are not logged in are sent to /login
+    login_manager.login_view = "login"      
     login_manager.init_app(app)
 
     @login_manager.user_loader
@@ -28,7 +37,7 @@ def create_app(config=None):
 
     @login_manager.unauthorized_handler
     def unauthorized():
-        # API clients get a JSON 401; browser pages are sent to the login form.
+        
         if request.path.startswith("/api/"):
             return jsonify({"error": "Login required."}), 401
         return redirect(url_for("login", next=request.path))
@@ -40,8 +49,11 @@ def create_app(config=None):
 
     @app.before_request   # runs before every request for pages that use the database
     def prepare_database():
-        if request.path.startswith(("/tasks", "/api/", "/login", "/register", "/logout")):
+        if request.path.startswith(
+            ("/tasks", "/links", "/s/", "/api/", "/login", "/register", "/logout")
+        ):
             ensure_tables()
+
 
     def all_tasks():
         """Only the logged-in user's own tasks."""
@@ -58,6 +70,41 @@ def create_app(config=None):
             abort(404)
         return task
 
+    def my_links():
+        """Only the logged-in user's own short links, newest first."""
+        return db.session.execute(
+            db.select(Link).filter_by(user_id=current_user.id).order_by(Link.id.desc())
+        ).scalars().all()
+
+    def own_link_or_404(link_id):
+        link = db.session.execute(
+            db.select(Link).filter_by(id=link_id, user_id=current_user.id)
+        ).scalar_one_or_none()
+        if link is None:
+            abort(404)
+        return link
+
+    def create_link(url):
+        """Save a new short link for the current user, picking a random unused code."""
+        for _ in range(10):
+            code = generate_short_code()
+            taken = db.session.execute(
+                db.select(Link).filter_by(short_code=code)
+            ).scalar_one_or_none()
+            if taken is None:
+                link = Link(original_url=url, short_code=code, user_id=current_user.id)
+                db.session.add(link)
+                db.session.commit()
+                return link
+        abort(500)   
+
+    def link_json(link):
+        data = link.to_dict()
+        data["short_url"] = url_for("follow_link", code=link.short_code, _external=True)
+        return data
+
+    
+
     @app.route("/")
     def index():
         return "Hello, world!"
@@ -65,6 +112,8 @@ def create_app(config=None):
     @app.route("/health")
     def health():
         return {"status": "ok"}
+
+    
 
     @app.route("/register", methods=["GET", "POST"])
     def register():
@@ -83,7 +132,7 @@ def create_app(config=None):
         db.session.add(user)
         db.session.commit()
         login_user(user)
-        return redirect(url_for("tasks_page"))
+        return redirect(url_for("links_page"))
 
     @app.route("/login", methods=["GET", "POST"])
     def login():
@@ -95,12 +144,14 @@ def create_app(config=None):
         if user is None or not user.check_password(password):
             return render_template("login.html", error="Invalid username or password."), 401
         login_user(user)
-        return redirect(url_for("tasks_page"))
+        return redirect(url_for("links_page"))
 
     @app.route("/logout", methods=["POST"])
     def logout():
         logout_user()
         return redirect(url_for("login"))
+
+    # ---------- tasks ----------
 
     @app.route("/tasks", methods=["GET"])
     @login_required
@@ -153,6 +204,63 @@ def create_app(config=None):
         db.session.add(task)
         db.session.commit()
         return jsonify(task.to_dict()), 201
+
+    
+
+    @app.route("/links", methods=["GET"])
+    @login_required
+    def links_page():
+        return render_template("links.html", links=my_links(), error=None)
+
+    @app.route("/links", methods=["POST"])
+    @login_required
+    def add_link_form():
+        try:
+            url = validate_url(request.form.get("url"))
+        except ValueError as exc:
+            return render_template("links.html", links=my_links(), error=str(exc)), 400
+        create_link(url)
+        return redirect(url_for("links_page"))
+
+    @app.route("/links/<int:link_id>/delete", methods=["POST"])
+    @login_required
+    def delete_link_form(link_id):
+        link = own_link_or_404(link_id)
+        db.session.delete(link)
+        db.session.commit()
+        return redirect(url_for("links_page"))
+
+    @app.route("/s/<code>")
+    def follow_link(code):
+        """Public: anyone with the short link is redirected to the original address."""
+        link = db.session.execute(
+            db.select(Link).filter_by(short_code=code)
+        ).scalar_one_or_none()
+        if link is None:
+            abort(404)
+     
+        db.session.execute(
+            db.update(Link).where(Link.id == link.id).values(clicks=Link.clicks + 1)
+        )
+        db.session.commit()
+        return redirect(link.original_url, code=302)   # 302, so browsers do not cache it and skip the counter
+
+    @app.route("/api/links", methods=["GET"])
+    @login_required
+    def api_list_links():
+        return jsonify([link_json(link) for link in my_links()])
+
+    @app.route("/api/links", methods=["POST"])
+    @login_required
+    def api_create_link():
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            data = {}
+        try:
+            url = validate_url(data.get("url"))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify(link_json(create_link(url))), 201
 
     return app
 

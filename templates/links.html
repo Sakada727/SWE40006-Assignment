@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>My links - URL Shortener</title>
+  <style>
+    body { background:#1a202c; color:#e2e8f0; font-family:system-ui,sans-serif; margin:0; }
+    header { background:#dd6b20; padding:1rem 2rem; text-align:center; }
+    h1 { margin:0 0 .5rem; color:#fff; }
+    header a { color:#fff; margin-right:1rem; }
+    main { max-width:800px; margin:1.5rem auto; padding:0 1rem; }
+    input[type=text] { width:60%; padding:.5rem; border-radius:6px; border:1px solid #4a5568; background:#2d3748; color:#e2e8f0; }
+    button { padding:.45rem .8rem; border:0; border-radius:6px; background:#dd6b20; color:#fff; cursor:pointer; }
+    table { width:100%; border-collapse:collapse; margin-top:1.5rem; }
+    th, td { text-align:left; padding:.5rem; border-bottom:1px solid #4a5568; }
+    td.original { max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    a { color:#f6ad55; }
+    #error { color:#fc8181; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>URL Shortener</h1>
+    <a href="{{ url_for('tasks_page') }}">My tasks</a>
+    Signed in as {{ current_user.username }}
+    <form method="post" action="{{ url_for('logout') }}" style="display:inline">
+      <button id="logout-button" type="submit">Log out</button>
+    </form>
+  </header>
+  <main>
+    {% if error %}<p id="error">{{ error }}</p>{% endif %}
+    <form method="post" action="{{ url_for('add_link_form') }}">
+      <input type="text" id="url" name="url" placeholder="https://example.com/a/very/long/address" required>
+      <button id="add-link" type="submit">Shorten</button>
+    </form>
+
+    {% if links %}
+    <table id="link-list">
+      <tr><th>Short link</th><th>Original</th><th>Clicks</th><th></th></tr>
+      {% for link in links %}
+      <tr>
+        <td><a class="short-url" href="{{ url_for('follow_link', code=link.short_code) }}">{{ url_for('follow_link', code=link.short_code, _external=True) }}</a></td>
+        <td class="original" title="{{ link.original_url }}">{{ link.original_url }}</td>
+        <td class="clicks">{{ link.clicks }}</td>
+        <td>
+          <form method="post" action="{{ url_for('delete_link_form', link_id=link.id) }}">
+            <button class="delete-link-btn" type="submit">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}
+    <p>No links yet. Paste a long address above to create your first short link.</p>
+    {% endif %}
+  </main>
+</body>
+</html>
