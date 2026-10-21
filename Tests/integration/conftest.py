@@ -10,7 +10,12 @@ from models import db
 def database_url():
     url = os.environ.get("TEST_DATABASE_URL")
     if not url:
-        pytest.skip("TEST_DATABASE_URL is not set, so no real database is available.")
+        message = "TEST_DATABASE_URL is not set, so no real database is available."
+        if os.environ.get("CI"):
+            # In the pipeline a skipped integration suite would look like a pass,
+            # so treat a missing database as a failure there.
+            pytest.fail(message)
+        pytest.skip(message)
     database_name = url.rsplit("/", 1)[-1].split("?")[0]
     if "test" not in database_name.lower():
         # These tests drop every table, so never point them at real data.
