@@ -12,6 +12,7 @@
 <body>
   <header>
     <h1>Task Tracker</h1>
+    <a href="{{ url_for('links_page') }}" id="links-nav" style="color:#fff">My links</a>
     <form method="post" action="/logout" style="display:inline">
       <span>Signed in as {{ current_user.username }}</span>
       <button type="submit" id="logout-button">Log out</button>
