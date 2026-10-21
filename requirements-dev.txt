@@ -1,0 +1,5 @@
+# Everything needed to develop and test. Never installed in the production image.
+-r requirements.txt
+pytest==9.1.1
+pytest-cov==7.1.0
+playwright==1.64.0
