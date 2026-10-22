@@ -155,3 +155,11 @@ def test_login_never_redirects_off_the_site(client, target):
 def test_login_cookie_is_not_sent_with_cross_site_posts(client):
     response = register(client)
     assert "SameSite=Lax" in response.headers["Set-Cookie"]
+    
+def safe_next(target):
+    if not target or not target.startswith("/") or target.startswith("//") or "\\" in target:
+        return None
+    parsed = urlparse(target)
+    if parsed.scheme or parsed.netloc:
+        return None
+    return target
