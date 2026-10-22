@@ -2,9 +2,10 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Task Tracker</title>
   <style>
-    body { background-color: #1a202c; color: white; }
+    body { background-color: #1a202c; color: white; font-family: system-ui, sans-serif; margin: 0; }
     header { background-color: #dd6b20; color: white; padding: 20px; text-align: center; }
     main { padding: 20px; }
   </style>
@@ -45,5 +46,6 @@
       </li>
     {% endfor %}
   </ul>
+  {% include "_footer.html" %}
 </body>
 </html>

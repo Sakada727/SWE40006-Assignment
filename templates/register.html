@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Register - Url Shortener</title>
+  <title>Register - URL Shortener</title>
   <style>
     body { background:#1a202c; color:#e2e8f0; font-family:system-ui,sans-serif; margin:0; }
     header { background:#dd6b20; padding:1rem 2rem; }
@@ -17,7 +17,7 @@
   </style>
 </head>
 <body>
-  <header><h1>Task Tracker</h1></header>
+  <header><h1>URL Shortener</h1></header>
   <main>
     <h2>Create an account</h2>
     {% if error %}<p id="error">{{ error }}</p>{% endif %}
@@ -30,5 +30,6 @@
     </form>
     <p>Already registered? <a href="{{ url_for('login') }}">Log in</a></p>
   </main>
+  {% include "_footer.html" %}
 </body>
 </html>

@@ -1,0 +1,28 @@
+# Keep the image small and free of anything that is not needed at run time
+.git
+.github
+.gitignore
+.dockerignore
+Tests
+conftest.py
+pytest.ini
+requirements-dev.txt
+dbtestcheck.py
+docker-compose.yml
+README.md
+
+# Never copy local secrets or local databases into an image
+.env
+.env.*
+instance/
+*.db
+
+# Local Python clutter
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+coverage.xml
+*.xml
+venv/
+.venv/

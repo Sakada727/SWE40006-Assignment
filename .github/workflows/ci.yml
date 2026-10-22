@@ -19,63 +19,77 @@ jobs:
   # ---------------------------------------------------------------- Testing
   test:
     name: Testing
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04 # pinned so the runner OS only changes when we choose to
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
+          cache-dependency-path: requirements*.txt
       - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install pytest-cov
-      - name: Run unit tests
-        run: pytest -v --junitxml=unit-report.xml --cov=. --cov-report=xml:coverage.xml
+        run: pip install -r requirements-dev.txt
+      - name: Run unit tests (coverage gate 85%)
+        run: >
+          pytest -m "not integration and not e2e" -v
+          --junitxml=unit-report.xml
+          --cov=app --cov=models --cov-report=term-missing --cov-report=xml:coverage.xml
+          --cov-fail-under=85
       - name: Upload test reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: unit-test-reports
           path: |
             unit-report.xml
             coverage.xml
 
-  # ------------------------------------------- Staging (throwaway CI runner)
+  # ---------------------------------------------- Test server (CI runner)
+  # Builds the image once, runs it beside a fresh PostgreSQL, and runs the
+  # integration and end-to-end suites against it. Only an image that passes
+  # every suite is pushed to GHCR and promoted to the servers below.
   staging:
     name: Staging (CI runner)
     needs: test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     permissions:
       contents: read
       packages: write # needed to push the tested image to GHCR
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set image name
         run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: Build image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           load: true
           tags: ${{ env.IMAGE }}:${{ github.sha }}
+          build-args: GIT_SHA=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Start staging stack (isolated network + Postgres)
         run: |
           docker network create staging-net
-          docker run -d --name staging-db --network staging-net \
+          # Port 5432 is published on localhost only, so the integration tests on
+          # this runner can reach the database. Nothing outside the runner can.
+          docker run -d --name staging-db --network staging-net -p 127.0.0.1:5432:5432 \
             -e POSTGRES_USER=app -e POSTGRES_PASSWORD=app -e POSTGRES_DB=appdb \
             postgres:16
           for i in $(seq 1 30); do
             docker exec staging-db pg_isready -U app -d appdb && break
             sleep 2
           done
+          # A second, separate database for the integration tests (they drop every
+          # table), so they never touch the data the running app is using
+          docker exec staging-db createdb -U app apptest
           docker run -d --name app-staging --network staging-net -p 8081:8080 \
             -e DATABASE_URL=postgresql://app:app@staging-db:5432/appdb \
             -e SECRET_KEY=staging-only-key \
@@ -85,7 +99,7 @@ jobs:
         run: |
           for i in $(seq 1 30); do
             if curl -sf http://localhost:8081/health; then
-              echo; echo "App is healthy"; exit 0
+              echo; echo "App is healthy and connected to PostgreSQL"; exit 0
             fi
             sleep 2
           done
@@ -93,27 +107,27 @@ jobs:
           docker logs app-staging
           exit 1
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
+          cache-dependency-path: requirements*.txt
 
-      - name: Install test dependencies
-        run: pip install -r requirements.txt
-
-      - name: Integration and end-to-end tests
-        env:
-          BASE_URL: http://localhost:8081
+      - name: Install test dependencies and browser
         run: |
-          dirs=""
-          for d in Tests/integration Tests/e2e; do
-            [ -d "$d" ] && dirs="$dirs $d"
-          done
-          if [ -n "$dirs" ]; then
-            pytest $dirs -v --junitxml=staging-report.xml
-          else
-            echo "::warning::No Tests/integration or Tests/e2e folder found, skipping"
-          fi
+          pip install -r requirements-dev.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Integration tests (app against PostgreSQL)
+        env:
+          TEST_DATABASE_URL: postgresql://app:app@localhost:5432/apptest
+        run: pytest Tests/integration -m integration -v --junitxml=integration-report.xml
+
+      - name: End-to-end tests (Playwright against the staging container)
+        env:
+          E2E_BASE_URL: http://localhost:8081
+          E2E_EXPECTED_VERSION: ${{ github.sha }}
+        run: pytest Tests/e2e -m e2e -v --junitxml=e2e-report.xml
 
       - name: Show container logs
         if: always()
@@ -123,18 +137,19 @@ jobs:
 
       - name: Upload staging reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: staging-reports
           path: |
-            staging-report.xml
+            integration-report.xml
+            e2e-report.xml
             staging-app.log
           if-no-files-found: ignore
 
       # Image is pushed only after it has passed every test above
       - name: Log in to GHCR
         if: github.event_name == 'push'
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -157,7 +172,8 @@ jobs:
     name: Deploy to staging server
     needs: staging
     if: github.event_name == 'push'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     environment: staging
     concurrency:
       group: deploy-staging
@@ -166,7 +182,7 @@ jobs:
       EC2_HOST: ${{ secrets.EC2_HOST_STAGING }}
       EC2_USER: ec2-user
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set image name
         run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
@@ -215,15 +231,16 @@ jobs:
           ssh -i ~/.ssh/key.pem "$EC2_USER@$EC2_HOST" bash -s <<EOF
           set -u
           PREV=\$(docker inspect -f '{{.Config.Image}}' app 2>/dev/null || true)
-          docker pull $IMAGE:$GITHUB_SHA
+          # A failed pull must not touch the version that is running now
+          docker pull $IMAGE:$GITHUB_SHA || { echo "Pull failed, keeping the current version"; exit 1; }
           docker rm -f app >/dev/null 2>&1 || true
           docker run -d --name app --restart unless-stopped -p 80:8080 \
-            --env-file ~/app.env -e GIT_SHA=$GITHUB_SHA \
-            $IMAGE:$GITHUB_SHA
+            --env-file ~/app.env $IMAGE:$GITHUB_SHA
           for i in \$(seq 1 30); do
-            if curl -sf http://localhost/health >/dev/null; then
-              echo "Staging server is running $GITHUB_SHA and is healthy"
-              docker image prune -f >/dev/null
+            if curl -sf http://localhost/health; then
+              echo; echo "Staging server is running $GITHUB_SHA and is healthy"
+              # Every deploy leaves the previous SHA-tagged image behind; keep three days of them
+              docker image prune -af --filter "until=72h" >/dev/null
               exit 0
             fi
             sleep 2
@@ -238,32 +255,29 @@ jobs:
           exit 1
           EOF
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         if: steps.reach.outputs.up == 'true'
         with:
           python-version: "3.12"
           cache: pip
+          cache-dependency-path: requirements*.txt
 
-      - name: Install test dependencies
-        if: steps.reach.outputs.up == 'true'
-        run: pip install -r requirements.txt
-
-      - name: Integration and end-to-end tests against staging server
+      - name: Install test dependencies and browser
         if: steps.reach.outputs.up == 'true'
         run: |
-          dirs=""
-          for d in Tests/integration Tests/e2e; do
-            [ -d "$d" ] && dirs="$dirs $d"
-          done
-          if [ -n "$dirs" ]; then
-            BASE_URL="http://$EC2_HOST" pytest $dirs -v --junitxml=staging-server-report.xml
-          else
-            echo "::warning::No Tests/integration or Tests/e2e folder found, skipping"
-          fi
+          pip install -r requirements-dev.txt
+          python -m playwright install --with-deps chromium
+
+      - name: End-to-end tests against staging server
+        if: steps.reach.outputs.up == 'true'
+        env:
+          E2E_BASE_URL: http://${{ secrets.EC2_HOST_STAGING }}
+          E2E_EXPECTED_VERSION: ${{ github.sha }}
+        run: pytest Tests/e2e -m e2e -v --junitxml=staging-server-report.xml
 
       - name: Upload staging server reports
         if: always() && steps.reach.outputs.up == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: staging-server-reports
           path: staging-server-report.xml
@@ -278,7 +292,8 @@ jobs:
     name: Deploy to production
     needs: staging-server
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     environment: production # add required reviewers in Settings > Environments for a manual approval gate
     concurrency:
       group: deploy-production
@@ -297,7 +312,7 @@ jobs:
           mkdir -p ~/.ssh
           echo "$EC2_SSH_KEY" > ~/.ssh/key.pem
           chmod 600 ~/.ssh/key.pem
-          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
+          ssh-keyscan -T 10 -H "$EC2_HOST" >> ~/.ssh/known_hosts
 
       - name: Write app secrets to server
         env:
@@ -320,15 +335,16 @@ jobs:
           ssh -i ~/.ssh/key.pem "$EC2_USER@$EC2_HOST" bash -s <<EOF
           set -u
           PREV=\$(docker inspect -f '{{.Config.Image}}' app 2>/dev/null || true)
-          docker pull $IMAGE:$GITHUB_SHA
+          # A failed pull must not touch the version that is running now
+          docker pull $IMAGE:$GITHUB_SHA || { echo "Pull failed, keeping the current version"; exit 1; }
           docker rm -f app >/dev/null 2>&1 || true
           docker run -d --name app --restart unless-stopped -p 80:8080 \
-            --env-file ~/app.env -e GIT_SHA=$GITHUB_SHA \
-            $IMAGE:$GITHUB_SHA
+            --env-file ~/app.env $IMAGE:$GITHUB_SHA
           for i in \$(seq 1 30); do
-            if curl -sf http://localhost/health >/dev/null; then
-              echo "Deployed $GITHUB_SHA and it is healthy"
-              docker image prune -f >/dev/null
+            if curl -sf http://localhost/health; then
+              echo; echo "Deployed $GITHUB_SHA and it is healthy"
+              # Every deploy leaves the previous SHA-tagged image behind; keep three days of them
+              docker image prune -af --filter "until=72h" >/dev/null
               exit 0
             fi
             sleep 2
@@ -343,11 +359,30 @@ jobs:
           exit 1
           EOF
 
-      - name: Public smoke test
+      # Proves, from outside AWS, that production is serving this exact commit
+      # and that it can reach its RDS database.
+      - name: Public smoke test (version and database)
         run: |
           curl -sf --retry 5 --retry-delay 3 --retry-connrefused \
-            "http://$EC2_HOST/health"
-          echo; echo "Production is reachable at http://$EC2_HOST"
+            "http://$EC2_HOST/health" | tee health.json
+          echo
+          jq -e --arg sha "$GITHUB_SHA" \
+            '.status == "ok" and .database == "ok" and .version == $sha' health.json
+          echo "Production at http://$EC2_HOST is serving $GITHUB_SHA with a working database"
+
+      - name: Deployment summary
+        if: success()
+        run: |
+          {
+            echo "### Deployed to production"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Commit | \`$GITHUB_SHA\` |"
+            echo "| Image | \`$IMAGE:$GITHUB_SHA\` |"
+            echo "| URL | http://$EC2_HOST |"
+            echo "| Health | \`$(cat health.json)\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Remove registry credentials from server
         if: always()
