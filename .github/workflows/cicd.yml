@@ -255,18 +255,6 @@ jobs:
           exit 1
           EOF
 
-      - name: Ensure HTTPS proxy (Caddy) is running
-        if: steps.reach.outputs.up == 'true'
-        env:
-          APP_DOMAIN: ${{ secrets.APP_DOMAIN_STAGING }}
-        run: |
-          printf '{\n\tauto_https disable_redirects\n}\n\nhttps://%s {\n\ttls {\n\t\tissuer acme {\n\t\t\tdisable_http_challenge\n\t\t}\n\t}\n\treverse_proxy localhost:80\n}\n' "$APP_DOMAIN" \
-            | ssh -i ~/.ssh/key.pem "$EC2_USER@$EC2_HOST" "mkdir -p ~/caddy && cat > ~/caddy/Caddyfile"
-          ssh -i ~/.ssh/key.pem "$EC2_USER@$EC2_HOST" \
-            "docker rm -f caddy >/dev/null 2>&1 || true; \
-             docker run -d --name caddy --restart unless-stopped --network host \
-               -v ~/caddy/Caddyfile:/etc/caddy/Caddyfile -v caddy_data:/data caddy:2"
-
       - uses: actions/setup-python@v6
         if: steps.reach.outputs.up == 'true'
         with:
@@ -286,15 +274,6 @@ jobs:
           E2E_BASE_URL: http://${{ secrets.EC2_HOST_STAGING }}
           E2E_EXPECTED_VERSION: ${{ github.sha }}
         run: pytest Tests/e2e -m e2e -v --junitxml=staging-server-report.xml
-
-      - name: Public HTTPS check
-        if: steps.reach.outputs.up == 'true'
-        continue-on-error: true # remove once HTTPS is confirmed working
-        env:
-          APP_DOMAIN: ${{ secrets.APP_DOMAIN_STAGING }}
-        run: |
-          sleep 15
-          curl -sf --retry 5 --retry-delay 3 --retry-connrefused "https://$APP_DOMAIN/health"
 
       - name: Upload staging server reports
         if: always() && steps.reach.outputs.up == 'true'
