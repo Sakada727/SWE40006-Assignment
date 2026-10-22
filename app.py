@@ -43,7 +43,7 @@ def create_app(config=None):
         return {"app_version": app.config["GIT_SHA"][:7]}
 
     login_manager = LoginManager()
-    login_manager.login_view = "login"
+    login_manager.login_view = "login"      
     login_manager.init_app(app)
 
     @login_manager.user_loader
@@ -52,28 +52,44 @@ def create_app(config=None):
 
     @login_manager.unauthorized_handler
     def unauthorized():
+        
         if request.path.startswith("/api/"):
             return jsonify({"error": "Login required."}), 401
         return redirect(url_for("login", next=request.path))
 
-    def ensure_tables():
-        if not app.config.get("_TABLES_READY"):
-            db.create_all()
+    tables_lock = threading.Lock()
+
+    def ensure_tables():  # create the tables the first time they are needed
+        if app.config.get("_TABLES_READY"):
+            return
+        with tables_lock:  # gunicorn runs several threads; only one should create tables
+            if app.config.get("_TABLES_READY"):
+                return
+            try:
+                db.create_all()
+            except SQLAlchemyError:
+                # Another gunicorn worker created the same table a moment earlier.
+                # Its CREATE has committed by now, so a second pass finds the tables.
+                db.session.rollback()
+                db.create_all()
             app.config["_TABLES_READY"] = True
 
-    @app.before_request
+    @app.before_request   # runs before every request for pages that use the database
     def prepare_database():
         if request.path == "/" or request.path.startswith(
             ("/tasks", "/links", "/s/", "/api/", "/login", "/register", "/logout")
         ):
             ensure_tables()
 
+
     def all_tasks():
+        """Only the logged-in user's own tasks."""
         return db.session.execute(
             db.select(Task).filter_by(user_id=current_user.id).order_by(Task.id)
         ).scalars().all()
 
     def own_task_or_404(task_id):
+        """Look a task up by id, but only if it belongs to the logged-in user."""
         task = db.session.execute(
             db.select(Task).filter_by(id=task_id, user_id=current_user.id)
         ).scalar_one_or_none()
@@ -82,6 +98,7 @@ def create_app(config=None):
         return task
 
     def my_links():
+        """Only the logged-in user's own short links, newest first."""
         return db.session.execute(
             db.select(Link).filter_by(user_id=current_user.id).order_by(Link.id.desc())
         ).scalars().all()
@@ -95,6 +112,7 @@ def create_app(config=None):
         return link
 
     def create_link(url):
+        """Save a new short link for the current user, picking a random unused code."""
         for _ in range(10):
             code = generate_short_code()
             taken = db.session.execute(
@@ -105,7 +123,7 @@ def create_app(config=None):
                 db.session.add(link)
                 db.session.commit()
                 return link
-        abort(500)
+        abort(500)   
 
     def after_login():
         """Go back to the page that asked for a login, but only within this site."""
@@ -119,11 +137,11 @@ def create_app(config=None):
         data["short_url"] = url_for("follow_link", code=link.short_code, _external=True)
         return data
 
+    
+
     @app.route("/")
     def index():
-        if current_user.is_authenticated:
-            return render_template("links.html", links=my_links(), error=None)
-        return render_template("register.html", error=None)
+        return render_template("index.html")
 
     @app.route("/health")
     def health():
@@ -140,6 +158,8 @@ def create_app(config=None):
             db.session.rollback()
             return jsonify(status="error", database="unreachable", **body), 503
         return jsonify(status="ok", database="ok", **body)
+
+    
 
     @app.route("/register", methods=["GET", "POST"])
     def register():
@@ -158,7 +178,7 @@ def create_app(config=None):
         db.session.add(user)
         db.session.commit()
         login_user(user)
-        return redirect(url_for("index"))
+        return redirect(url_for("links_page"))
 
     @app.route("/login", methods=["GET", "POST"])
     def login():
@@ -170,12 +190,14 @@ def create_app(config=None):
         if user is None or not user.check_password(password):
             return render_template("login.html", error="Invalid username or password."), 401
         login_user(user)
-        return redirect(url_for("index"))
+        return after_login()
 
     @app.route("/logout", methods=["POST"])
     def logout():
         logout_user()
-        return redirect(url_for("index"))
+        return redirect(url_for("login"))
+
+    # ---------- tasks ----------
 
     @app.route("/tasks", methods=["GET"])
     @login_required
@@ -229,6 +251,8 @@ def create_app(config=None):
         db.session.commit()
         return jsonify(task.to_dict()), 201
 
+    
+
     @app.route("/links", methods=["GET"])
     @login_required
     def links_page():
@@ -242,7 +266,7 @@ def create_app(config=None):
         except ValueError as exc:
             return render_template("links.html", links=my_links(), error=str(exc)), 400
         create_link(url)
-        return redirect(url_for("index"))
+        return redirect(url_for("links_page"))
 
     @app.route("/links/<int:link_id>/delete", methods=["POST"])
     @login_required
@@ -250,20 +274,22 @@ def create_app(config=None):
         link = own_link_or_404(link_id)
         db.session.delete(link)
         db.session.commit()
-        return redirect(url_for("index"))
+        return redirect(url_for("links_page"))
 
     @app.route("/s/<code>")
     def follow_link(code):
+        """Public: anyone with the short link is redirected to the original address."""
         link = db.session.execute(
             db.select(Link).filter_by(short_code=code)
         ).scalar_one_or_none()
         if link is None:
             abort(404)
+     
         db.session.execute(
             db.update(Link).where(Link.id == link.id).values(clicks=Link.clicks + 1)
         )
         db.session.commit()
-        return redirect(link.original_url, code=302)
+        return redirect(link.original_url, code=302)   # 302, so browsers do not cache it and skip the counter
 
     @app.route("/api/links", methods=["GET"])
     @login_required

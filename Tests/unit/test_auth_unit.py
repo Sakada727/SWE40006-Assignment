@@ -25,12 +25,12 @@ def login(client, username="alice", password="password123"):
     return client.post("/login", data={"username": username, "password": password})
 
 
-
+# ---- registration ----
 
 def test_register_creates_account_and_logs_in(client):
     response = register(client)
     assert response.status_code == 302
-    assert response.headers["Location"] == "/"
+    assert "/links" in response.headers["Location"]
     assert client.get("/tasks").status_code == 200
 
 
@@ -54,7 +54,7 @@ def test_password_is_stored_hashed(client, flask_app):
         assert user.check_password("password123")
 
 
-
+# ---- login and logout ----
 
 def test_login_succeeds_with_correct_password(client):
     register(client)
@@ -86,7 +86,7 @@ def test_logout_blocks_access_again(client):
     assert "/login" in response.headers["Location"]
 
 
-
+# ---- protected routes ----
 
 def test_tasks_page_requires_login(client):
     response = client.get("/tasks")
@@ -99,7 +99,7 @@ def test_api_requires_login(client):
     assert client.post("/api/tasks", json={"title": "x"}).status_code == 401
 
 
-
+# ---- each user only sees their own tasks ----
 
 def test_users_only_see_their_own_tasks(two_user_app):
     alice = two_user_app.test_client()
