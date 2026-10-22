@@ -131,3 +131,27 @@ def test_user_cannot_delete_or_complete_another_users_task(two_user_app):
 
     remaining = alice.get("/api/tasks").get_json()
     assert len(remaining) == 1 and remaining[0]["done"] is False
+
+
+# ---- returning to the page that asked for a login ----
+
+def test_login_returns_to_the_page_that_required_it(client):
+    register(client)
+    client.post("/logout")
+    assert client.get("/tasks").headers["Location"].endswith("/login?next=/tasks")
+    response = client.post("/login?next=/tasks", data={"username": "alice", "password": "password123"})
+    assert response.headers["Location"] == "/tasks"
+
+
+@pytest.mark.parametrize("target", ["//evil.example", "https://evil.example", "/\\evil.example", "tasks"])
+def test_login_never_redirects_off_the_site(client, target):
+    register(client)
+    client.post("/logout")
+    response = client.post("/login", query_string={"next": target},
+                           data={"username": "alice", "password": "password123"})
+    assert response.headers["Location"] == "/links"
+
+
+def test_login_cookie_is_not_sent_with_cross_site_posts(client):
+    response = register(client)
+    assert "SameSite=Lax" in response.headers["Set-Cookie"]

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Register - Url Shortener</title>
+  <title>Register - URL Shortener</title>
   <style>
     body { margin:0; font-family:AriaL;}
     body { background:#1a202c; color:#e2e8f0; font-family:system-ui,sans-serif; margin:0; }
@@ -31,5 +31,6 @@
     </form>
     <p>Already registered? <a href="{{ url_for('login') }}">Log in</a></p>
   </main>
+  {% include "_footer.html" %}
 </body>
 </html>

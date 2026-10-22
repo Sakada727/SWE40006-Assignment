@@ -1,0 +1,35 @@
+# Local development environment: the same image the pipeline builds, plus PostgreSQL.
+#   docker compose up --build     then open http://localhost:8080
+#   docker compose down -v        stop and delete the local database
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: appdb
+    ports:
+      - "127.0.0.1:5432:5432"   # lets integration tests run from your machine
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "app", "-d", "appdb"]
+      interval: 2s
+      retries: 30
+
+  web:
+    build:
+      context: .
+      args:
+        GIT_SHA: local
+    environment:
+      DATABASE_URL: postgresql://app:app@db:5432/appdb
+      SECRET_KEY: local-dev-only
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  db-data:

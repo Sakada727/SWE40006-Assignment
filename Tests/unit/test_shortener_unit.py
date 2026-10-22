@@ -43,6 +43,8 @@ def test_validate_url_strips_surrounding_spaces():
 
 @pytest.mark.parametrize("bad", [
     None,
+    123,
+    ["https://example.com"],
     "",
     "   ",
     "hello",
@@ -104,6 +106,13 @@ def test_api_rejects_a_dangerous_url(shortener_app):
     assert response.status_code == 400
     assert "http" in response.get_json()["error"]
     assert alice.get("/api/links").get_json() == []          
+
+
+def test_api_rejects_a_url_that_is_not_text(shortener_app):
+    alice = logged_in(shortener_app)
+    response = alice.post("/api/links", json={"url": 123})
+    assert response.status_code == 400                      # previously crashed with a 500
+    assert response.get_json()["error"] == "URL is required."
 
 
 def test_form_shows_an_error_for_a_bad_url(shortener_app):

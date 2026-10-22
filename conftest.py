@@ -13,6 +13,7 @@ def flask_app():
         yield app                 
         db.session.remove()       
         db.drop_all()
+        db.engine.dispose()       # close the in-memory database connection
 
 
 @pytest.fixture

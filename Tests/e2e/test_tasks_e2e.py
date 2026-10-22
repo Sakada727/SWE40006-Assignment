@@ -4,8 +4,13 @@ import uuid
 
 import pytest
 
-pytest.importorskip("playwright.sync_api")
-from playwright.sync_api import expect, sync_playwright
+try:
+    from playwright.sync_api import expect, sync_playwright
+except ImportError:
+    if os.environ.get("CI"):
+        # In the pipeline a skipped browser suite would look like a pass
+        raise
+    pytest.skip("Playwright is not installed.", allow_module_level=True)
 
 pytestmark = pytest.mark.e2e
 
@@ -102,6 +107,17 @@ def test_user_can_shorten_a_link_and_follow_it(e2e_page):
     expect(e2e_page.locator("body")).to_contain_text("ok")  # it landed on /health
 
     e2e_page.goto("/links")
+
+
+def test_home_page_shows_the_deployed_version(e2e_browser):
+    context = e2e_browser.new_context(base_url=BASE_URL)
+    page = context.new_page()
+    page.goto("/")
+    expect(page.locator("#go-login")).to_be_visible()
+    expected = os.environ.get("E2E_EXPECTED_VERSION")    # set by the pipeline to the commit SHA
+    if expected:
+        expect(page.locator("#app-version")).to_have_text(expected[:7])
+    context.close()
 
 
 def test_dangerous_link_is_rejected(e2e_page):

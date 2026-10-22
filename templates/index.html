@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>URL Shortener</title>
+  <style>
+    body { background:#1a202c; color:#e2e8f0; font-family:system-ui,sans-serif; margin:0; }
+    header { background:#dd6b20; padding:1rem 2rem; text-align:center; }
+    h1 { margin:0; color:#fff; }
+    main { max-width:560px; margin:2.5rem auto; padding:0 1rem; text-align:center; line-height:1.6; }
+    a.button { display:inline-block; margin:.5rem; padding:.6rem 1.2rem; border-radius:6px; background:#dd6b20; color:#fff; text-decoration:none; }
+    a { color:#f6ad55; }
+  </style>
+</head>
+<body>
+  <header><h1>URL Shortener</h1></header>
+  <main>
+    <p id="tagline">Turn long web addresses into short links you can share, and see how many times each one has been opened.</p>
+    {% if current_user.is_authenticated %}
+      <p>Signed in as {{ current_user.username }}.</p>
+      <a class="button" id="go-links" href="{{ url_for('links_page') }}">My links</a>
+      <a class="button" id="go-tasks" href="{{ url_for('tasks_page') }}">My tasks</a>
+    {% else %}
+      <a class="button" id="go-login" href="{{ url_for('login') }}">Log in</a>
+      <a class="button" id="go-register" href="{{ url_for('register') }}">Create an account</a>
+    {% endif %}
+  </main>
+  {% include "_footer.html" %}
+</body>
+</html>
