@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Register - Url Shortener</title>
   <style>
+    body { margin:0; font-family:AriaL;}
     body { background:#1a202c; color:#e2e8f0; font-family:system-ui,sans-serif; margin:0; }
     header { background:#dd6b20; padding:1rem 2rem; }
     h1 { margin:0; color:#fff; }
@@ -17,11 +18,11 @@
   </style>
 </head>
 <body>
-  <header><h1>Task Tracker</h1></header>
+  <header><h1>URL Shortener</h1></header>
   <main>
     <h2>Create an account</h2>
     {% if error %}<p id="error">{{ error }}</p>{% endif %}
-    <form method="post">
+    <form method="post" action="{{ url_for('register') }}">
       <label for="username">Username</label>
       <input id="username" name="username" required maxlength="50">
       <label for="password">Password (min 8 characters)</label>

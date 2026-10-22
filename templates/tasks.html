@@ -4,22 +4,33 @@
   <meta charset="utf-8">
   <title>Task Tracker</title>
   <style>
-    body { background-color: #1a202c; color: white; }
-    header { background-color: #dd6b20; color: white; padding: 20px; text-align: center; }
-    main { padding: 20px; }
+  body { margin:0; font-family:Arial, Helvetica, sans-serif; background:#1a202c}
+   header { background:#dd6b20; padding:1rem 2rem; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:.5rem; }
+  h1 { margin:0; color:#fff; }
+  .user-box { display:flex; align-items:center; gap:1rem; color:#fff; font-size:1rem; line-height:1; }
+  .user-box a { color:#fff; text-decoration:none; }
+  .user-box a:hover { text-decoration:underline; }
+  .user-box span { color:#fff; }
+  .user-box form { margin:0; }
+  .user-box button { font:inherit; color:#fff; background:transparent; border:1px solid #fff; border-radius:4px; padding:.35rem .8rem; cursor:pointer; }
+  .user-box button:hover { background:rgba(255,255,255,.2); }
+  header ~ * { margin-left:2rem; margin-right:2rem; }
+  header ~ form { margin-top:1.5rem; }
   </style>
 </head>
 <body>
   <header>
-    <h1>Task Tracker</h1>
-    <a href="{{ url_for('links_page') }}" id="links-nav" style="color:#fff">My links</a>
-    <form method="post" action="/logout" style="display:inline">
-      <span>Signed in as {{ current_user.username }}</span>
+  <h1>Task Tracker</h1>
+  <div class="user-box">
+    <a href="{{ url_for('links_page') }}" id="links-nav">My links</a>
+    <span>Signed in as {{ current_user.username }}</span>
+    <form method="post" action="{{ url_for('logout') }}">
       <button type="submit" id="logout-button">Log out</button>
     </form>
-  </header>
+  </div>
+</header>
 
-  {% if error %}                            <!-- only show this if the route sent an error message -->
+  {% if error %}                            
     <p id="error">{{ error }}</p>
   {% endif %}
 
@@ -28,7 +39,7 @@
     <button type="submit" id="add-task">Add task</button>
   </form>
 
-  <ul id="task-list">                       <!-- the list of tasks; Playwright finds it by this id -->
+  <ul id="task-list">                       
     {% for task in tasks %}
       <li>
         <span>{{ task.title }}</span>

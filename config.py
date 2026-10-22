@@ -17,10 +17,9 @@ def normalise_database_url(url):
 
 
 class Config:
-    # Set DATABASE_URL in the environment for staging/production.
-    # The fallback is only for local development.
+    
     SQLALCHEMY_DATABASE_URI = os.environ.get("DATABASE_URL", "sqlite:///app.db")
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
-    # Signs the login cookie. Real servers must set the SECRET_KEY environment variable.
+   
     SECRET_KEY = os.environ.get("SECRET_KEY", "dev-secret-change-me")

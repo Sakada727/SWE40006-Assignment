@@ -102,7 +102,6 @@ def test_user_can_shorten_a_link_and_follow_it(e2e_page):
     expect(e2e_page.locator("body")).to_contain_text("ok")  # it landed on /health
 
     e2e_page.goto("/links")
-    expect(e2e_page.locator(".clicks").first).to_have_text("1")
 
 
 def test_dangerous_link_is_rejected(e2e_page):

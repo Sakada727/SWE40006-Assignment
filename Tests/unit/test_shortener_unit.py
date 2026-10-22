@@ -30,7 +30,7 @@ def make_link(client, url="https://example.com/some/long/page"):
     return response.get_json()
 
 
-# ---- URL validation ----
+
 
 @pytest.mark.parametrize("url", ["https://www.swinburne.edu.au", "http://example.com/a/b?x=1#top"])
 def test_validate_url_accepts_http_and_https(url):
@@ -57,7 +57,7 @@ def test_validate_url_rejects_bad_input(bad):
         validate_url(bad)
 
 
-# ---- short codes ----
+
 
 def test_generated_code_has_expected_length_and_characters():
     code = generate_short_code()
@@ -69,7 +69,7 @@ def test_generated_codes_are_not_all_identical():
     assert len({generate_short_code() for _ in range(50)}) > 1
 
 
-# ---- login is required to manage links ----
+
 
 def test_managing_links_requires_login(shortener_app):
     anonymous = shortener_app.test_client()
@@ -80,7 +80,7 @@ def test_managing_links_requires_login(shortener_app):
     assert anonymous.post("/api/links", json={"url": "https://example.com"}).status_code == 401
 
 
-# ---- creating links ----
+
 
 def test_api_creates_a_short_link(shortener_app):
     alice = logged_in(shortener_app)
@@ -103,7 +103,7 @@ def test_api_rejects_a_dangerous_url(shortener_app):
     response = alice.post("/api/links", json={"url": "javascript:alert(1)"})
     assert response.status_code == 400
     assert "http" in response.get_json()["error"]
-    assert alice.get("/api/links").get_json() == []          # nothing was saved
+    assert alice.get("/api/links").get_json() == []          
 
 
 def test_form_shows_an_error_for_a_bad_url(shortener_app):
@@ -123,7 +123,7 @@ def test_link_is_saved_in_the_database(shortener_app):
         assert stored.clicks == 0
 
 
-# ---- following links (public) ----
+
 
 def test_short_link_redirects_without_logging_in(shortener_app):
     alice = logged_in(shortener_app)
@@ -148,7 +148,7 @@ def test_unknown_short_code_returns_404(shortener_app):
     assert visitor.get("/s/zzzzzz").status_code == 404
 
 
-# ---- ownership ----
+
 
 def test_users_only_see_their_own_links(shortener_app):
     alice = logged_in(shortener_app, "alice")
@@ -172,3 +172,40 @@ def test_user_cannot_delete_another_users_link(shortener_app):
     link = make_link(alice)
     assert bob.post(f"/links/{link['id']}/delete").status_code == 404
     assert len(alice.get("/api/links").get_json()) == 1
+
+def test_home_page_for_visitors_is_the_register_page(shortener_app):
+    response = shortener_app.test_client().get("/")
+    assert response.status_code == 200
+    assert b"Create an account" in response.data
+    assert b'action="/register"' in response.data 
+
+def test_registering_from_the_home_page_lands_on_the_shortener(shortener_app):
+    visitor = shortener_app.test_client()
+    response = visitor.post("/register", data={"username": "newuser", "password": "password123"})
+    assert response.headers["Location"] == "/"
+    page = visitor.get("/")
+    assert b"logout-button" in page.data  
+
+# ---- homepage ----
+
+def test_home_page_for_visitors_is_the_register_page(shortener_app):
+    response = shortener_app.test_client().get("/")
+    assert response.status_code == 200
+    assert b"Create an account" in response.data
+    assert b'action="/register"' in response.data      
+
+
+def test_registering_from_the_home_page_lands_on_the_shortener(shortener_app):
+    visitor = shortener_app.test_client()
+    response = visitor.post("/register", data={"username": "newuser", "password": "password123"})
+    assert response.headers["Location"] == "/"
+    page = visitor.get("/")
+    assert b"logout-button" in page.data                
+
+
+def test_home_page_shows_the_links_when_logged_in(shortener_app):
+    alice = logged_in(shortener_app)
+    make_link(alice, "https://example.com/on-home")
+    response = alice.get("/")
+    assert response.status_code == 200
+    assert b"https://example.com/on-home" in response.data
