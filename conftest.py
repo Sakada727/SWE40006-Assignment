@@ -9,10 +9,11 @@ def flask_app():
     # A brand-new app using a throwaway in-memory database for each test
     app = create_app({"TESTING": True, "SQLALCHEMY_DATABASE_URI": "sqlite:///:memory:"})
     with app.app_context():
-        db.create_all()           # build the empty tasks table
+        db.create_all()           # build the empty tables
         yield app                 # the test runs here
         db.session.remove()       # cleanup after the test
         db.drop_all()
+        db.engine.dispose()       # close the in-memory database connection
 
 
 @pytest.fixture

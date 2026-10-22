@@ -1,7 +1,10 @@
 import os
+import threading
 
 from flask import Flask, abort, jsonify, redirect, render_template, request, url_for
 from flask_login import LoginManager, current_user, login_required, login_user, logout_user
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 
 from models import Link, Task, User, db, generate_short_code, validate_title, validate_url
 
@@ -24,8 +27,20 @@ def create_app(config=None):
     )
     if not app.config.get("SECRET_KEY"):
         app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dev-secret-change-me")
+    # The commit this image was built from (baked in by the Dockerfile), so every
+    # environment can report exactly which version it is running.
+    app.config.setdefault("GIT_SHA", os.environ.get("GIT_SHA", "dev"))
+    # Browsers then refuse to send the login cookie with a form posted from another
+    # website, which blocks most cross-site request forgery against the POST routes.
+    # (Flask's own default is None, so setdefault would leave it unset.)
+    if app.config.get("SESSION_COOKIE_SAMESITE") is None:
+        app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
     db.init_app(app)
+
+    @app.context_processor
+    def inject_version():
+        return {"app_version": app.config["GIT_SHA"][:7]}
 
     login_manager = LoginManager()
     login_manager.login_view = "login"      
@@ -42,14 +57,26 @@ def create_app(config=None):
             return jsonify({"error": "Login required."}), 401
         return redirect(url_for("login", next=request.path))
 
+    tables_lock = threading.Lock()
+
     def ensure_tables():  # create the tables the first time they are needed
-        if not app.config.get("_TABLES_READY"):
-            db.create_all()
+        if app.config.get("_TABLES_READY"):
+            return
+        with tables_lock:  # gunicorn runs several threads; only one should create tables
+            if app.config.get("_TABLES_READY"):
+                return
+            try:
+                db.create_all()
+            except SQLAlchemyError:
+                # Another gunicorn worker created the same table a moment earlier.
+                # Its CREATE has committed by now, so a second pass finds the tables.
+                db.session.rollback()
+                db.create_all()
             app.config["_TABLES_READY"] = True
 
     @app.before_request   # runs before every request for pages that use the database
     def prepare_database():
-        if request.path.startswith(
+        if request.path == "/" or request.path.startswith(
             ("/tasks", "/links", "/s/", "/api/", "/login", "/register", "/logout")
         ):
             ensure_tables()
@@ -98,6 +125,13 @@ def create_app(config=None):
                 return link
         abort(500)   
 
+    def after_login():
+        """Go back to the page that asked for a login, but only within this site."""
+        target = request.args.get("next", "")
+        if target.startswith("/") and not target.startswith("//") and "\\" not in target:
+            return redirect(target)
+        return redirect(url_for("links_page"))
+
     def link_json(link):
         data = link.to_dict()
         data["short_url"] = url_for("follow_link", code=link.short_code, _external=True)
@@ -107,11 +141,23 @@ def create_app(config=None):
 
     @app.route("/")
     def index():
-        return "Hello, world!"
+        return render_template("index.html")
 
     @app.route("/health")
     def health():
-        return {"status": "ok"}
+        """Used by Docker, the deploy health check and the smoke test.
+
+        It runs a real query, so a deploy whose container cannot reach its
+        database fails the health check and is rolled back.
+        """
+        body = {"version": app.config["GIT_SHA"]}
+        try:
+            db.session.execute(text("SELECT 1"))
+        except SQLAlchemyError:
+            app.logger.exception("Health check could not reach the database")
+            db.session.rollback()
+            return jsonify(status="error", database="unreachable", **body), 503
+        return jsonify(status="ok", database="ok", **body)
 
     
 
@@ -144,7 +190,7 @@ def create_app(config=None):
         if user is None or not user.check_password(password):
             return render_template("login.html", error="Invalid username or password."), 401
         login_user(user)
-        return redirect(url_for("links_page"))
+        return after_login()
 
     @app.route("/logout", methods=["POST"])
     def logout():
