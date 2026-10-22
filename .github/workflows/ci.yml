@@ -231,14 +231,16 @@ jobs:
           ssh -i ~/.ssh/key.pem "$EC2_USER@$EC2_HOST" bash -s <<EOF
           set -u
           PREV=\$(docker inspect -f '{{.Config.Image}}' app 2>/dev/null || true)
-          docker pull $IMAGE:$GITHUB_SHA
+          # A failed pull must not touch the version that is running now
+          docker pull $IMAGE:$GITHUB_SHA || { echo "Pull failed, keeping the current version"; exit 1; }
           docker rm -f app >/dev/null 2>&1 || true
           docker run -d --name app --restart unless-stopped -p 80:8080 \
             --env-file ~/app.env $IMAGE:$GITHUB_SHA
           for i in \$(seq 1 30); do
             if curl -sf http://localhost/health; then
               echo; echo "Staging server is running $GITHUB_SHA and is healthy"
-              docker image prune -f >/dev/null
+              # Every deploy leaves the previous SHA-tagged image behind; keep three days of them
+              docker image prune -af --filter "until=72h" >/dev/null
               exit 0
             fi
             sleep 2
@@ -333,14 +335,16 @@ jobs:
           ssh -i ~/.ssh/key.pem "$EC2_USER@$EC2_HOST" bash -s <<EOF
           set -u
           PREV=\$(docker inspect -f '{{.Config.Image}}' app 2>/dev/null || true)
-          docker pull $IMAGE:$GITHUB_SHA
+          # A failed pull must not touch the version that is running now
+          docker pull $IMAGE:$GITHUB_SHA || { echo "Pull failed, keeping the current version"; exit 1; }
           docker rm -f app >/dev/null 2>&1 || true
           docker run -d --name app --restart unless-stopped -p 80:8080 \
             --env-file ~/app.env $IMAGE:$GITHUB_SHA
           for i in \$(seq 1 30); do
             if curl -sf http://localhost/health; then
               echo; echo "Deployed $GITHUB_SHA and it is healthy"
-              docker image prune -f >/dev/null
+              # Every deploy leaves the previous SHA-tagged image behind; keep three days of them
+              docker image prune -af --filter "until=72h" >/dev/null
               exit 0
             fi
             sleep 2

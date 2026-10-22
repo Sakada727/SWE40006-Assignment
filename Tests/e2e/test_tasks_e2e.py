@@ -4,8 +4,13 @@ import uuid
 
 import pytest
 
-pytest.importorskip("playwright.sync_api")
-from playwright.sync_api import expect, sync_playwright
+try:
+    from playwright.sync_api import expect, sync_playwright
+except ImportError:
+    if os.environ.get("CI"):
+        # In the pipeline a skipped browser suite would look like a pass
+        raise
+    pytest.skip("Playwright is not installed.", allow_module_level=True)
 
 pytestmark = pytest.mark.e2e
 

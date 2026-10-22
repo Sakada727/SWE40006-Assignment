@@ -64,7 +64,7 @@ SHORT_CODE_ALPHABET = string.ascii_letters + string.digits
 
 def validate_url(raw):
     """Return a cleaned URL, or raise ValueError. Only http and https links are allowed."""
-    if raw is None:
+    if not isinstance(raw, str):        # None, numbers or lists from the JSON API
         raise ValueError("URL is required.")
     url = raw.strip()
     if not url:

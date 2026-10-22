@@ -30,6 +30,11 @@ def create_app(config=None):
     # The commit this image was built from (baked in by the Dockerfile), so every
     # environment can report exactly which version it is running.
     app.config.setdefault("GIT_SHA", os.environ.get("GIT_SHA", "dev"))
+    # Browsers then refuse to send the login cookie with a form posted from another
+    # website, which blocks most cross-site request forgery against the POST routes.
+    # (Flask's own default is None, so setdefault would leave it unset.)
+    if app.config.get("SESSION_COOKIE_SAMESITE") is None:
+        app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
     db.init_app(app)
 
@@ -120,6 +125,13 @@ def create_app(config=None):
                 return link
         abort(500)   
 
+    def after_login():
+        """Go back to the page that asked for a login, but only within this site."""
+        target = request.args.get("next", "")
+        if target.startswith("/") and not target.startswith("//") and "\\" not in target:
+            return redirect(target)
+        return redirect(url_for("links_page"))
+
     def link_json(link):
         data = link.to_dict()
         data["short_url"] = url_for("follow_link", code=link.short_code, _external=True)
@@ -178,7 +190,7 @@ def create_app(config=None):
         if user is None or not user.check_password(password):
             return render_template("login.html", error="Invalid username or password."), 401
         login_user(user)
-        return redirect(url_for("links_page"))
+        return after_login()
 
     @app.route("/logout", methods=["POST"])
     def logout():
